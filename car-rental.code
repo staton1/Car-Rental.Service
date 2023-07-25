@@ -1,0 +1,118 @@
+CREATE TABLE branches (
+    branch_id SERIAL PRIMARY KEY,
+    branch_name VARCHAR(50) NOT NULL
+);
+
+CREATE TABLE cars (
+    car_id SERIAL PRIMARY KEY,
+    car_name VARCHAR(50) NOT NULL
+);
+
+CREATE TABLE rentals (
+    rental_id SERIAL PRIMARY KEY,
+    type VARCHAR(5) NOT NULL,
+    id VARCHAR(50) NOT NULL,
+    branch_id INTEGER NOT NULL,
+    car_id INTEGER NOT NULL,
+    timestamp TIMESTAMP NOT NULL,
+    comments VARCHAR(200),
+    FOREIGN KEY (branch_id) REFERENCES branches (branch_id),
+    FOREIGN KEY (car_id) REFERENCES cars (car_id)
+);
+
+this Python script is to parse the rental file, load data into the database, and generate summary records to an output file.
+
+
+import json
+import psycopg2
+from datetime import datetime, timedelta
+
+# PostgreSQL database connection parameters
+DB_HOST = 'your_db_host'
+DB_NAME = 'your_db_name'
+DB_USER = 'your_db_user'
+DB_PASSWORD = 'your_db_password'
+
+def parse_and_load_data(file_path):
+    conn = psycopg2.connect(host=DB_HOST, dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD)
+    cur = conn.cursor()
+
+    with open(file_path, 'r') as file:
+        data = json.load(file)
+        for record in data:
+            if record['type'] == 'START':
+                cur.execute('INSERT INTO rentals (type, id, branch_id, car_id, timestamp, comments) VALUES (%s, %s, %s, %s, %s, %s)',
+                            (record['type'], record['id'], int(record['branch_id']), int(record['car_id']), datetime.fromtimestamp(record['timestamp']), record['comments']))
+            elif record['type'] == 'END':
+                cur.execute('UPDATE rentals SET type = %s, branch_id = %s, timestamp = %s, comments = %s WHERE id = %s AND type = %s',
+                            (record['type'], int(record['branch_id']), datetime.fromtimestamp(record['timestamp']), record['comments'], record['id'], 'START'))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def generate_summary_records(output_file_path):
+    conn = psycopg2.connect(host=DB_HOST, dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD)
+    cur = conn.cursor()
+
+    with open(output_file_path, 'w') as file:
+        cur.execute('SELECT id, MIN(timestamp) AS start_time, MAX(timestamp) AS end_time, '
+                    '(MAX(timestamp) - MIN(timestamp)) AS session_duration, '
+                    'car_id, branch_id, comments '
+                    'FROM rentals '
+                    'GROUP BY id, car_id, branch_id, comments')
+        rows = cur.fetchall()
+
+        summary_records = []
+        for row in rows:
+            session_id, start_time, end_time, session_duration, car_id, branch_id, comments = row
+            delayed_return_flag = session_duration > timedelta(hours=24)
+            car_damage_flag = bool(comments)
+            return_to_different_branch_flag = False
+
+            summary_record = {
+                'session_id': session_id,
+                'start_time': start_time.timestamp(),
+                'end_time': end_time.timestamp(),
+                'session_duration': session_duration.total_seconds(),
+                'car_rented': car_id,
+                'delayed_return_flag': delayed_return_flag,
+                'car_damage_flag': car_damage_flag,
+                'return_to_different_branch_flag': return_to_different_branch_flag
+            }
+            summary_records.append(summary_record)
+
+        json.dump(summary_records, file)
+
+    cur.close()
+    conn.close()
+
+if __name__ == '__main__':
+    input_file_path = 'path/to/your/input_file.json'
+    output_file_path = 'path/to/your/output_file.json'
+
+    parse_and_load_data(input_file_path)
+    generate_summary_records(output_file_path)
+
+---
+-- Insert records for branches table
+INSERT INTO branches (branch_name) VALUES
+    ('Wellington Branch'),
+    ('Auckland Branch'),
+    ('Christchurch Branch');
+
+-- Insert records for cars table
+INSERT INTO cars (car_name) VALUES
+    ('Nissan WingRider - Silver'),
+    ('Suzuki Vitara - Red'),
+    ('Volvo box - Brown'),
+    ('BMW X5 - Pink');
+
+-- Insert records for rentals table
+INSERT INTO rentals (type, id, branch_id, car_id, timestamp, comments) VALUES
+    ('START', 'ABC123', 1, 1, '2023-07-20 10:00:00', 'No issues - brand new and shiny!'),
+    ('END', 'ABC123', 1, NULL, '2023-07-20 14:00:00', 'Car is missing both front wheels!'),
+    ('START', 'ABC456', 1, 2, '2023-07-15 09:30:00', 'Small dent on passenger door'),
+    ('END', 'ABC456', 2, NULL, '2023-07-16 11:30:00', '');
+
+
